@@ -1,9 +1,11 @@
 """Robotron-inspired twin-stick shooter with particle effects."""
 from __future__ import annotations
 
+import json
 import math
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import pygame
@@ -25,6 +27,9 @@ ARENA_COLOR = (40, 40, 90)
 PLAYER_COLOR = (60, 220, 255)
 BULLET_COLOR = (255, 245, 180)
 ENEMY_COLORS = [(255, 70, 90), (255, 130, 70), (255, 200, 70)]
+
+MAX_HIGH_SCORES = 5
+HIGH_SCORE_PATH = Path(__file__).with_name("high_scores.json")
 
 
 class Particle(pygame.sprite.Sprite):
@@ -74,6 +79,126 @@ class ParticleSystem:
 
     def trail(self, pos: Tuple[float, float], color: Tuple[int, int, int]) -> None:
         self.burst(pos, color, amount=4, speed=(20, 60), lifetime=(0.2, 0.45), size=(1, 2))
+
+
+class HighScoreManager:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.scores: List[dict[str, int | str]] = []
+        self.load()
+
+    def load(self) -> None:
+        if not self.path.exists():
+            self.scores = []
+            return
+        try:
+            with self.path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            self.scores = []
+            return
+        if isinstance(data, list):
+            valid_scores = []
+            for item in data:
+                if (
+                    isinstance(item, dict)
+                    and isinstance(item.get("initials"), str)
+                    and isinstance(item.get("score"), int)
+                ):
+                    valid_scores.append({
+                        "initials": item["initials"][:3].upper(),
+                        "score": item["score"],
+                    })
+            self.scores = sorted(valid_scores, key=lambda entry: entry["score"], reverse=True)[:MAX_HIGH_SCORES]
+        else:
+            self.scores = []
+
+    def save(self) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("w", encoding="utf-8") as fh:
+                json.dump(self.scores, fh, indent=2)
+        except OSError:
+            pass
+
+    def qualifies(self, score: int) -> bool:
+        if score <= 0:
+            return False
+        if len(self.scores) < MAX_HIGH_SCORES:
+            return True
+        return score > self.scores[-1]["score"]
+
+    def add_score(self, initials: str, score: int) -> None:
+        initials = initials[:3].upper()
+        self.scores.append({"initials": initials, "score": score})
+        self.scores.sort(key=lambda entry: entry["score"], reverse=True)
+        del self.scores[MAX_HIGH_SCORES:]
+        self.save()
+
+
+@dataclass
+class CelebrationParticle:
+    position: pygame.Vector2
+    velocity: pygame.Vector2
+    color: Tuple[int, int, int]
+    size: int
+    life: float
+    max_life: float
+
+
+class CelebrationBackground:
+    def __init__(self, count: int = 220) -> None:
+        self.particles: List[CelebrationParticle] = [self._create_particle() for _ in range(count)]
+
+    def _create_particle(self) -> CelebrationParticle:
+        position = pygame.Vector2(random.uniform(0, WIDTH), random.uniform(0, HEIGHT))
+        angle = random.uniform(0, math.tau)
+        speed = random.uniform(60, 180)
+        velocity = pygame.Vector2(math.cos(angle), math.sin(angle)) * speed
+        color = (
+            random.randint(80, 255),
+            random.randint(80, 255),
+            random.randint(80, 255),
+        )
+        size = random.randint(2, 5)
+        life = random.uniform(1.8, 3.8)
+        return CelebrationParticle(position, velocity, color, size, life, life)
+
+    def _reset_particle(self, particle: CelebrationParticle) -> None:
+        particle.position.update(
+            WIDTH / 2 + random.uniform(-WIDTH / 3, WIDTH / 3),
+            HEIGHT / 2 + random.uniform(-HEIGHT / 3, HEIGHT / 3),
+        )
+        angle = random.uniform(0, math.tau)
+        speed = random.uniform(90, 220)
+        particle.velocity.update(math.cos(angle) * speed, math.sin(angle) * speed)
+        particle.color = (
+            random.randint(120, 255),
+            random.randint(120, 255),
+            random.randint(120, 255),
+        )
+        particle.size = random.randint(2, 5)
+        particle.max_life = random.uniform(1.6, 3.6)
+        particle.life = particle.max_life
+
+    def update(self, dt: float) -> None:
+        for particle in self.particles:
+            particle.life -= dt
+            if particle.life <= 0:
+                self._reset_particle(particle)
+                continue
+            particle.position += particle.velocity * dt
+            particle.velocity.rotate_ip(random.uniform(-90, 90) * dt)
+            if not (-120 <= particle.position.x <= WIDTH + 120) or not (-120 <= particle.position.y <= HEIGHT + 120):
+                self._reset_particle(particle)
+
+    def draw(self, surface: pygame.Surface) -> None:
+        for particle in self.particles:
+            brightness = max(0.0, particle.life / particle.max_life)
+            alpha = int(255 * brightness ** 2)
+            radius = max(1, int(particle.size * (0.5 + brightness * 0.8)))
+            color = (*particle.color, alpha)
+            pygame.draw.circle(surface, color, particle.position, radius)
 
 
 class Player(pygame.sprite.Sprite):
@@ -213,7 +338,7 @@ class Game:
         pygame.display.set_caption("Robotron Remix")
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         self.clock = pygame.time.Clock()
-        self.running = True
+        self.running = False
 
         self.all_sprites = pygame.sprite.Group()
         self.enemy_sprites = pygame.sprite.Group()
@@ -228,6 +353,8 @@ class Game:
 
         self.time_since_spawn = 0.0
         self.score = 0
+        self.exiting = False
+        self.high_scores = HighScoreManager(HIGH_SCORE_PATH)
 
     def spawn_enemy(self) -> None:
         if len(self.enemy_sprites) >= MAX_ENEMIES:
@@ -318,50 +445,7 @@ class Game:
             warning = font.render("Re-initializing!", True, (255, 240, 120))
             self.screen.blit(warning, (WIDTH / 2 - warning.get_width() / 2, HEIGHT - 40))
 
-    def run(self) -> None:
-        while self.running:
-            dt = self.clock.tick(FPS) / 1000.0
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.running = False
-                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                    self.running = False
-
-            self.update(dt)
-            self.draw()
-
-        self.game_over()
-
-    def game_over(self) -> None:
-        font = pygame.font.SysFont("Consolas", 48)
-        small_font = pygame.font.SysFont("Consolas", 28)
-        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 180))
-        self.screen.blit(overlay, (0, 0))
-        text = font.render("GAME OVER", True, (255, 255, 255))
-        score_text = small_font.render(f"Final Score: {self.score}", True, (255, 200, 80))
-        prompt = small_font.render("Press Enter to play again or Esc to quit", True, (200, 200, 220))
-        self.screen.blit(text, (WIDTH / 2 - text.get_width() / 2, HEIGHT / 2 - 120))
-        self.screen.blit(score_text, (WIDTH / 2 - score_text.get_width() / 2, HEIGHT / 2 - 40))
-        self.screen.blit(prompt, (WIDTH / 2 - prompt.get_width() / 2, HEIGHT / 2 + 20))
-        pygame.display.flip()
-
-        waiting = True
-        while waiting:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    waiting = False
-                    self.running = False
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_RETURN:
-                        self.restart()
-                        waiting = False
-                    elif event.key == pygame.K_ESCAPE:
-                        waiting = False
-                        self.running = False
-            self.clock.tick(30)
-
-    def restart(self) -> None:
+    def start_new_game(self) -> None:
         self.score = 0
         self.player.lives = 3
         self.player.reset()
@@ -370,7 +454,156 @@ class Game:
         self.particle_sprites.empty()
         self.time_since_spawn = 0.0
         self.running = True
-        self.run()
+        self.exiting = False
+
+    def run(self) -> None:
+        show_intro = True
+        continue_playing = True
+        while continue_playing:
+            if show_intro:
+                if not self.show_high_score_screen(start=True):
+                    break
+                show_intro = False
+            self.start_new_game()
+            self.game_loop()
+            if self.exiting:
+                break
+            continue_playing = self.game_over()
+
+    def game_loop(self) -> None:
+        while self.running:
+            dt = self.clock.tick(FPS) / 1000.0
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                    self.exiting = True
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    self.running = False
+
+            if not self.running:
+                break
+
+            self.update(dt)
+            self.draw()
+
+    def game_over(self) -> bool:
+        return self.show_high_score_screen(start=False, new_score=self.score)
+
+    def show_high_score_screen(self, start: bool, new_score: int | None = None) -> bool:
+        background = CelebrationBackground()
+        title_font = pygame.font.SysFont("Consolas", 64)
+        entry_font = pygame.font.SysFont("Consolas", 36)
+        small_font = pygame.font.SysFont("Consolas", 24)
+
+        entering_initials = new_score is not None and self.high_scores.qualifies(new_score)
+        initials = ["A", "A", "A"]
+        selected_index = 0
+        highlight_pair: Tuple[str, int] | None = None
+
+        while True:
+            dt = self.clock.tick(FPS) / 1000.0
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.exiting = True
+                    return False
+                if event.type == pygame.KEYDOWN:
+                    if entering_initials:
+                        if event.key == pygame.K_RIGHT:
+                            selected_index = (selected_index + 1) % len(initials)
+                        elif event.key == pygame.K_LEFT:
+                            selected_index = (selected_index - 1) % len(initials)
+                        elif event.key == pygame.K_UP:
+                            initials[selected_index] = chr(
+                                (ord(initials[selected_index]) - ord("A") + 1) % 26 + ord("A")
+                            )
+                        elif event.key == pygame.K_DOWN:
+                            initials[selected_index] = chr(
+                                (ord(initials[selected_index]) - ord("A") - 1) % 26 + ord("A")
+                            )
+                        elif event.key == pygame.K_RETURN:
+                            initials_str = "".join(initials)
+                            self.high_scores.add_score(initials_str, int(new_score))
+                            highlight_pair = (initials_str, int(new_score))
+                            entering_initials = False
+                        elif event.key == pygame.K_ESCAPE:
+                            return False
+                    else:
+                        if event.key == pygame.K_RETURN:
+                            return True
+                        if event.key == pygame.K_ESCAPE:
+                            return False
+
+            background.update(dt)
+            self.screen.fill((10, 8, 40))
+            background.draw(self.screen)
+
+            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay.fill((10, 10, 30, 180))
+            self.screen.blit(overlay, (0, 0))
+
+            title_text = title_font.render("HIGH SCORES", True, (255, 255, 255))
+            self.screen.blit(title_text, (WIDTH / 2 - title_text.get_width() / 2, 60))
+
+            if new_score is not None:
+                score_label = entry_font.render(f"Your Score: {new_score}", True, (255, 230, 130))
+                self.screen.blit(score_label, (WIDTH / 2 - score_label.get_width() / 2, 140))
+
+            prompt_text: str
+            if entering_initials:
+                prompt_text = "New high score! Use arrow keys to set your initials."
+            elif start:
+                prompt_text = "Press Enter to start or Esc to quit."
+            else:
+                prompt_text = "Press Enter to play again or Esc to quit."
+
+            prompt_surface = small_font.render(prompt_text, True, (200, 220, 255))
+            self.screen.blit(prompt_surface, (WIDTH / 2 - prompt_surface.get_width() / 2, HEIGHT - 80))
+
+            top_offset = 220
+            highlight_consumed = False
+            for index in range(MAX_HIGH_SCORES):
+                if index < len(self.high_scores.scores):
+                    entry = self.high_scores.scores[index]
+                    initials_text = entry["initials"]
+                    score_value: int | None = entry["score"]
+                    score_display = str(entry["score"])
+                else:
+                    initials_text = "---"
+                    score_value = None
+                    score_display = "---"
+
+                line_y = top_offset + index * 50
+                label_surface = entry_font.render(f"{index + 1}.", True, (180, 200, 255))
+                self.screen.blit(label_surface, (WIDTH / 2 - 220, line_y))
+
+                highlight = False
+                if highlight_pair and not highlight_consumed and score_value is not None:
+                    if initials_text == highlight_pair[0] and score_value == highlight_pair[1]:
+                        highlight = True
+                        highlight_consumed = True
+
+                initials_color = (255, 255, 255) if not highlight else (255, 250, 180)
+                score_color = (200, 220, 255) if not highlight else (255, 240, 200)
+                initials_surface = entry_font.render(initials_text, True, initials_color)
+                score_surface = entry_font.render(score_display, True, score_color)
+                self.screen.blit(initials_surface, (WIDTH / 2 - initials_surface.get_width() / 2, line_y))
+                self.screen.blit(score_surface, (WIDTH / 2 + 140 - score_surface.get_width(), line_y))
+
+            if entering_initials and new_score is not None:
+                initials_display_y = HEIGHT - 160
+                initials_label = entry_font.render("Initials:", True, (255, 255, 255))
+                self.screen.blit(initials_label, (WIDTH / 2 - 200, initials_display_y))
+                for idx, letter in enumerate(initials):
+                    letter_surface = entry_font.render(letter, True, (255, 255, 255))
+                    letter_x = WIDTH / 2 - 60 + idx * 60
+                    letter_rect = letter_surface.get_rect(center=(letter_x, initials_display_y + 10))
+                    if idx == selected_index:
+                        highlight_rect = pygame.Rect(0, 0, 50, 60)
+                        highlight_rect.center = letter_rect.center
+                        pygame.draw.rect(self.screen, (255, 240, 120), highlight_rect, 3, border_radius=10)
+                    self.screen.blit(letter_surface, letter_rect.topleft)
+
+            pygame.display.flip()
 
 
 def main() -> None:
