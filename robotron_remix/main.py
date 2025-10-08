@@ -590,16 +590,30 @@ class Game:
             if entering_initials and new_score is not None:
                 initials_display_y = HEIGHT - 160
                 initials_label = entry_font.render("Initials:", True, (255, 255, 255))
-                self.screen.blit(initials_label, (WIDTH / 2 - 200, initials_display_y))
+                label_rect = initials_label.get_rect()
+                label_rect.midright = (WIDTH / 2 - 120, initials_display_y + 15)
+                self.screen.blit(initials_label, label_rect.topleft)
+
+                letter_spacing = 70
+                first_letter_x = label_rect.right + 20
                 for idx, letter in enumerate(initials):
                     letter_surface = entry_font.render(letter, True, (255, 255, 255))
-                    letter_x = WIDTH / 2 - 60 + idx * 60
-                    letter_rect = letter_surface.get_rect(center=(letter_x, initials_display_y + 10))
+                    letter_rect = letter_surface.get_rect()
+                    letter_rect.center = (
+                        first_letter_x + idx * letter_spacing,
+                        initials_display_y + 15,
+                    )
                     if idx == selected_index:
-                        highlight_rect = pygame.Rect(0, 0, 50, 60)
+                        highlight_rect = pygame.Rect(0, 0, 54, 66)
                         highlight_rect.center = letter_rect.center
-                        pygame.draw.rect(self.screen, (255, 240, 120), highlight_rect, 3, border_radius=10)
-                    self.screen.blit(letter_surface, letter_rect.topleft)
+                        pygame.draw.rect(
+                            self.screen,
+                            (255, 240, 120),
+                            highlight_rect,
+                            3,
+                            border_radius=12,
+                        )
+                    self.screen.blit(letter_surface, letter_rect)
 
             pygame.display.flip()
 
