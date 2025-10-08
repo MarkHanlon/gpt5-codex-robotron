@@ -223,10 +223,8 @@ class Player(pygame.sprite.Sprite):
     def update(self, dt: float, keys: Iterable[int]) -> List[Tuple[pygame.Vector2, pygame.Vector2]]:
         keys_pressed = pygame.key.get_pressed()
         move = pygame.Vector2(
-            (keys_pressed[pygame.K_d] or keys_pressed[pygame.K_RIGHT]) -
-            (keys_pressed[pygame.K_a] or keys_pressed[pygame.K_LEFT]),
-            (keys_pressed[pygame.K_s] or keys_pressed[pygame.K_DOWN]) -
-            (keys_pressed[pygame.K_w] or keys_pressed[pygame.K_UP]),
+            int(keys_pressed[pygame.K_d]) - int(keys_pressed[pygame.K_a]),
+            int(keys_pressed[pygame.K_s]) - int(keys_pressed[pygame.K_w]),
         )
         if move.length_squared() > 0:
             move = move.normalize()
@@ -244,8 +242,8 @@ class Player(pygame.sprite.Sprite):
 
         shots: List[Tuple[pygame.Vector2, pygame.Vector2]] = []
         shoot_dir = pygame.Vector2(
-            keys_pressed[pygame.K_RIGHT] - keys_pressed[pygame.K_LEFT],
-            keys_pressed[pygame.K_DOWN] - keys_pressed[pygame.K_UP],
+            int(keys_pressed[pygame.K_RIGHT]) - int(keys_pressed[pygame.K_LEFT]),
+            int(keys_pressed[pygame.K_DOWN]) - int(keys_pressed[pygame.K_UP]),
         )
         if shoot_dir.length_squared() > 0:
             shoot_dir = shoot_dir.normalize()
