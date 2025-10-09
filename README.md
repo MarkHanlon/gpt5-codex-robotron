@@ -33,3 +33,12 @@ The game window will open and begin spawning enemies immediately.
 - Keep moving to stay alive; standing still invites swarms from all sides.
 
 Enjoy the chaos! 
+
+## Upcoming Features
+
+- **Wave structure** – Escalating waves with breathers, objective rounds, or daily modifiers to keep each run distinct.
+- **Enemy variety** – New ranged turrets, telegraphed dashers, or shielded units that demand different tactics.
+- **Player progression** – Temporary power-ups and longer-term unlocks such as loadout perks tied to high scores.
+- **Scoring depth** – Multipliers for flawless waves, close-call dodges, and simultaneous kills to make chasing score engaging.
+- **Arena dynamics** – Evolving arenas with moving hazards, shifting safe zones, or portals that remix positioning.
+- **Sensory feedback** – Layered music, intensity-based color shifts, and distinctive audio cues to break repetition.
