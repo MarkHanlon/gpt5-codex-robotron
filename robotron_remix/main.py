@@ -17,16 +17,24 @@ ARENA_MARGIN = 32
 PLAYER_SPEED = 320
 BULLET_SPEED = 640
 ENEMY_SPEED = 140
-SPAWN_INTERVAL = 1.2
 MAX_ENEMIES = 30
 INVULNERABLE_TIME = 2.0
 SHOOT_COOLDOWN = 0.16
+BASE_SPAWN_INTERVAL = 1.2
+MIN_SPAWN_INTERVAL = 0.45
+BASE_ENEMIES_PER_WAVE = 12
+ENEMIES_PER_WAVE_INCREASE = 6
 
 BACKGROUND_COLOR = (5, 5, 25)
 ARENA_COLOR = (40, 40, 90)
 PLAYER_COLOR = (60, 220, 255)
 BULLET_COLOR = (255, 245, 180)
-ENEMY_COLORS = [(255, 70, 90), (255, 130, 70), (255, 200, 70)]
+ENEMY_COLOR_SETS = [
+    [(255, 70, 90), (255, 130, 70), (255, 200, 70)],
+    [(120, 255, 190), (80, 240, 220), (160, 220, 255)],
+    [(200, 140, 255), (255, 120, 210), (255, 180, 240)],
+    [(255, 220, 120), (255, 185, 90), (255, 240, 170)],
+]
 
 MAX_HIGH_SCORES = 5
 HIGH_SCORE_PATH = Path(__file__).with_name("high_scores.json")
@@ -276,16 +284,30 @@ class Bullet(pygame.sprite.Sprite):
             self.kill()
 
 
+@dataclass
+class EnemyAppearance:
+    colors: List[Tuple[int, int, int]]
+    shape: str
+    accent: Tuple[int, int, int]
+
+
 class Enemy(pygame.sprite.Sprite):
-    def __init__(self, pos: Tuple[float, float]) -> None:
+    def __init__(self, pos: Tuple[float, float], appearance: EnemyAppearance) -> None:
         super().__init__()
         self.pos = pygame.Vector2(pos)
         self.velocity = pygame.Vector2()
-        self.image = pygame.Surface((32, 32), pygame.SRCALPHA)
-        color = random.choice(ENEMY_COLORS)
-        pygame.draw.rect(self.image, color, (0, 0, 32, 32), border_radius=8)
-        pygame.draw.circle(self.image, (255, 255, 255), (16, 12), 5)
-        pygame.draw.circle(self.image, (0, 0, 0), (16, 12), 2)
+        self.image = pygame.Surface((36, 36), pygame.SRCALPHA)
+        color = random.choice(appearance.colors)
+        shape = appearance.shape
+        if shape == "triangle":
+            pygame.draw.polygon(self.image, color, [(18, 4), (32, 30), (4, 30)])
+        elif shape == "circle":
+            pygame.draw.circle(self.image, color, (18, 18), 16)
+        else:
+            pygame.draw.rect(self.image, color, (4, 4, 28, 28), border_radius=6)
+        accent_color = appearance.accent
+        pygame.draw.circle(self.image, accent_color, (18, 14), 6)
+        pygame.draw.circle(self.image, (0, 0, 0), (18, 14), 3)
         self.rect = self.image.get_rect(center=self.pos)
 
     def update(self, dt: float, target: pygame.Vector2) -> None:
@@ -350,12 +372,36 @@ class Game:
         self.star_field = StarField()
 
         self.time_since_spawn = 0.0
+        self.wave = 1
         self.score = 0
         self.exiting = False
         self.high_scores = HighScoreManager(HIGH_SCORE_PATH)
+        self.prepare_wave()
+
+    def enemies_for_wave(self, wave: int) -> int:
+        return BASE_ENEMIES_PER_WAVE + (wave - 1) * ENEMIES_PER_WAVE_INCREASE
+
+    def spawn_interval_for_wave(self, wave: int) -> float:
+        return max(MIN_SPAWN_INTERVAL, BASE_SPAWN_INTERVAL * (0.88 ** (wave - 1)))
+
+    def get_wave_appearance(self, wave: int) -> EnemyAppearance:
+        palette = ENEMY_COLOR_SETS[(wave - 1) % len(ENEMY_COLOR_SETS)]
+        shapes = ["square", "triangle", "circle"]
+        shape = shapes[(wave - 1) % len(shapes)]
+        accent = (255, 255, 255) if shape != "circle" else (20, 20, 20)
+        return EnemyAppearance(palette, shape, accent)
+
+    def prepare_wave(self) -> None:
+        self.spawned_this_wave = 0
+        self.current_wave_enemy_limit = self.enemies_for_wave(self.wave)
+        self.spawn_interval = self.spawn_interval_for_wave(self.wave)
+        self.current_enemy_appearance = self.get_wave_appearance(self.wave)
+        self.time_since_spawn = 0.0
 
     def spawn_enemy(self) -> None:
         if len(self.enemy_sprites) >= MAX_ENEMIES:
+            return
+        if self.spawned_this_wave >= self.current_wave_enemy_limit:
             return
         side = random.choice(["top", "bottom", "left", "right"])
         if side == "top":
@@ -366,10 +412,12 @@ class Game:
             pos = (-20, random.uniform(ARENA_MARGIN, HEIGHT - ARENA_MARGIN))
         else:
             pos = (WIDTH + 20, random.uniform(ARENA_MARGIN, HEIGHT - ARENA_MARGIN))
-        enemy = Enemy(pos)
+        enemy = Enemy(pos, self.current_enemy_appearance)
         self.enemy_sprites.add(enemy)
         self.all_sprites.add(enemy)
-        self.particles.burst(pos, random.choice(ENEMY_COLORS), 25, (40, 150), (0.4, 0.8), (2, 4))
+        wave_color = random.choice(self.current_enemy_appearance.colors)
+        self.particles.burst(pos, wave_color, 25, (40, 150), (0.4, 0.8), (2, 4))
+        self.spawned_this_wave += 1
 
     def update(self, dt: float) -> None:
         shots = self.player.update(dt, pygame.key.get_pressed())
@@ -391,9 +439,20 @@ class Game:
         self.star_field.update(dt)
 
         self.time_since_spawn += dt
-        if self.time_since_spawn >= SPAWN_INTERVAL:
+        if (
+            self.spawned_this_wave < self.current_wave_enemy_limit
+            and self.time_since_spawn >= self.spawn_interval
+        ):
             self.time_since_spawn = 0.0
             self.spawn_enemy()
+
+        if (
+            self.spawned_this_wave >= self.current_wave_enemy_limit
+            and not self.enemy_sprites
+            and self.spawned_this_wave > 0
+        ):
+            self.wave += 1
+            self.prepare_wave()
 
     def handle_collisions(self) -> None:
         for bullet in pygame.sprite.groupcollide(self.bullet_sprites, self.enemy_sprites, True, True):
@@ -437,7 +496,9 @@ class Game:
         font = pygame.font.SysFont("Consolas", 28)
         score_surface = font.render(f"Score: {self.score}", True, (255, 255, 255))
         lives_surface = font.render(f"Lives: {self.player.lives}", True, (255, 140, 180))
+        wave_surface = font.render(f"Wave: {self.wave}", True, (200, 220, 255))
         self.screen.blit(score_surface, (ARENA_MARGIN, 8))
+        self.screen.blit(wave_surface, (WIDTH / 2 - wave_surface.get_width() / 2, 8))
         self.screen.blit(lives_surface, (WIDTH - ARENA_MARGIN - lives_surface.get_width(), 8))
         if self.player.invulnerable:
             warning = font.render("Re-initializing!", True, (255, 240, 120))
@@ -451,6 +512,8 @@ class Game:
         self.bullet_sprites.empty()
         self.particle_sprites.empty()
         self.time_since_spawn = 0.0
+        self.wave = 1
+        self.prepare_wave()
         self.running = True
         self.exiting = False
 
