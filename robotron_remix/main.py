@@ -4,11 +4,14 @@ from __future__ import annotations
 import json
 import math
 import random
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import pygame
+
+pygame.mixer.pre_init(44100, -16, 1, 512)
 
 WIDTH, HEIGHT = 960, 720
 FPS = 60
@@ -24,6 +27,7 @@ BASE_SPAWN_INTERVAL = 1.2
 MIN_SPAWN_INTERVAL = 0.45
 BASE_ENEMIES_PER_WAVE = 12
 ENEMIES_PER_WAVE_INCREASE = 6
+SAMPLE_RATE = 44100
 
 BACKGROUND_COLOR = (5, 5, 25)
 ARENA_COLOR = (40, 40, 90)
@@ -352,6 +356,126 @@ class StarField:
             pygame.draw.circle(surface, (star.size * 40, star.size * 40, 255), star.position, star.size)
 
 
+class AudioManager:
+    def __init__(self) -> None:
+        self.available = True
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=1)
+        except pygame.error:
+            self.available = False
+            return
+
+        self.move_channel = pygame.mixer.Channel(1)
+        self.proximity_channel = pygame.mixer.Channel(2)
+
+        self.move_sound = self._create_engine_sound()
+        self.shoot_sound = self._create_shot_sound()
+        self.death_sound = self._create_death_sound()
+        self.proximity_sound = self._create_proximity_loop()
+
+    def _generate_wave(self, frequency: float, duration: float, volume: float, *, harmonics: List[tuple[float, float]] | None = None) -> bytes:
+        sample_count = max(1, int(SAMPLE_RATE * duration))
+        data = array("h")
+        harmonics = harmonics or []
+        attack = int(0.02 * SAMPLE_RATE)
+        release = int(0.04 * SAMPLE_RATE)
+        for index in range(sample_count):
+            base_phase = (index / SAMPLE_RATE) * frequency * math.tau
+            sample = math.sin(base_phase)
+            for multiplier, weight in harmonics:
+                sample += weight * math.sin(base_phase * multiplier)
+            envelope = 1.0
+            if attack:
+                envelope *= min(1.0, index / max(1, attack))
+            if release and index >= sample_count - release:
+                envelope *= max(0.0, (sample_count - index) / max(1, release))
+            data.append(int(sample * volume * 32767 * envelope))
+        return data.tobytes()
+
+    def _create_engine_sound(self) -> pygame.mixer.Sound:
+        buffer = array("h")
+        chunk = self._generate_wave(110, 0.18, 0.25, harmonics=[(2.0, 0.35), (3.0, 0.2)])
+        buffer.frombytes(chunk)
+        return pygame.mixer.Sound(buffer=buffer.tobytes())
+
+    def _create_shot_sound(self) -> pygame.mixer.Sound:
+        chunk = self._generate_wave(760, 0.12, 0.35, harmonics=[(1.5, 0.5), (2.0, 0.3)])
+        return pygame.mixer.Sound(buffer=chunk)
+
+    def _create_death_sound(self) -> pygame.mixer.Sound:
+        duration = 0.6
+        sample_count = max(1, int(SAMPLE_RATE * duration))
+        data = array("h")
+        for index in range(sample_count):
+            t = index / SAMPLE_RATE
+            freq = max(70.0, 320.0 * (1 - t))
+            phase = freq * math.tau * t
+            envelope = max(0.0, 1 - t / duration)
+            sample = math.sin(phase) * envelope
+            data.append(int(sample * 0.5 * 32767))
+        return pygame.mixer.Sound(buffer=data.tobytes())
+
+    def _create_proximity_loop(self) -> pygame.mixer.Sound:
+        duration = 0.5
+        sample_count = max(1, int(SAMPLE_RATE * duration))
+        data = array("h")
+        pulse_width = int(0.08 * SAMPLE_RATE)
+        for index in range(sample_count):
+            cycle_position = index % int(0.25 * SAMPLE_RATE)
+            envelope = 0.0
+            if cycle_position < pulse_width:
+                envelope = 1.0 - (cycle_position / max(1, pulse_width))
+            noise = math.sin(index / SAMPLE_RATE * 220 * math.tau) * 0.6
+            sample = (noise + math.sin(index / SAMPLE_RATE * 440 * math.tau) * 0.3) * envelope
+            data.append(int(sample * 0.4 * 32767))
+        return pygame.mixer.Sound(buffer=data.tobytes())
+
+    def update_player_movement(self, moving: bool) -> None:
+        if not self.available:
+            return
+        if moving:
+            if not self.move_channel.get_busy():
+                self.move_channel.play(self.move_sound, loops=-1)
+            self.move_channel.set_volume(0.3)
+        else:
+            if self.move_channel.get_busy():
+                self.move_channel.fadeout(150)
+
+    def play_shoot(self) -> None:
+        if not self.available:
+            return
+        self.shoot_sound.play()
+
+    def play_player_death(self) -> None:
+        if not self.available:
+            return
+        self.death_sound.play()
+
+    def update_enemy_proximity(self, player_pos: pygame.Vector2, enemies: Iterable[Enemy]) -> None:
+        if not self.available:
+            return
+        enemy_positions = [enemy.pos for enemy in enemies]
+        if not enemy_positions:
+            if self.proximity_channel.get_busy():
+                self.proximity_channel.fadeout(200)
+            return
+        min_distance = min(player_pos.distance_to(position) for position in enemy_positions)
+        proximity = max(0.0, min(1.0, 1 - min_distance / 420))
+        if proximity <= 0:
+            if self.proximity_channel.get_busy():
+                self.proximity_channel.fadeout(200)
+            return
+        if not self.proximity_channel.get_busy():
+            self.proximity_channel.play(self.proximity_sound, loops=-1)
+        self.proximity_channel.set_volume(0.1 + proximity * 0.5)
+
+    def stop_all(self) -> None:
+        if not self.available:
+            return
+        self.move_channel.stop()
+        self.proximity_channel.stop()
+
 class Game:
     def __init__(self) -> None:
         pygame.init()
@@ -370,6 +494,7 @@ class Game:
         self.all_sprites.add(self.player)
 
         self.star_field = StarField()
+        self.audio = AudioManager()
 
         self.time_since_spawn = 0.0
         self.wave = 1
@@ -421,10 +546,12 @@ class Game:
 
     def update(self, dt: float) -> None:
         shots = self.player.update(dt, pygame.key.get_pressed())
+        self.audio.update_player_movement(self.player.velocity.length_squared() > 0)
         for pos, direction in shots:
             bullet = Bullet(pos, direction, self.particles)
             self.bullet_sprites.add(bullet)
             self.all_sprites.add(bullet)
+            self.audio.play_shoot()
 
         for enemy in list(self.enemy_sprites):
             enemy.update(dt, self.player.pos)
@@ -437,6 +564,7 @@ class Game:
 
         self.handle_collisions()
         self.star_field.update(dt)
+        self.audio.update_enemy_proximity(self.player.pos, self.enemy_sprites)
 
         self.time_since_spawn += dt
         if (
@@ -469,8 +597,10 @@ class Game:
             self.particles.burst(self.player.pos, PLAYER_COLOR, 60, (120, 260), (0.4, 0.8), (2, 4))
             if self.player.lives <= 0:
                 self.running = False
+                self.audio.play_player_death()
             else:
                 self.player.reset()
+                self.audio.play_player_death()
 
     def draw(self) -> None:
         self.screen.fill(BACKGROUND_COLOR)
@@ -516,6 +646,7 @@ class Game:
         self.prepare_wave()
         self.running = True
         self.exiting = False
+        self.audio.stop_all()
 
     def run(self) -> None:
         show_intro = True
@@ -546,6 +677,8 @@ class Game:
 
             self.update(dt)
             self.draw()
+
+        self.audio.stop_all()
 
     def game_over(self) -> bool:
         return self.show_high_score_screen(start=False, new_score=self.score)
